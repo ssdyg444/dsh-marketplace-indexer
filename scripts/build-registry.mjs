@@ -116,7 +116,15 @@ async function fetchSegment(seg) {
   const q = rangeQuery(seg)
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=${PER_PAGE}&page=${page}`
-    const j = await api(url)
+    let j
+    try {
+      j = await api(url)
+    } catch (e) {
+      // HTTP 422 = 超出该查询的结果上限（单查询最多 1000 条）。
+      // 表示该段已取满，交由 buildFull 分裂继续；不是致命错误。
+      if (String(e && e.message || '').includes('422')) break
+      throw e
+    }
     for (const it of j.items || []) {
       if (!it.fork && !it.archived) collected.push(it)
     }
@@ -151,7 +159,7 @@ async function buildFull() {
     if (items.length >= SEARCH_LIMIT) {
       const sub = splitSegment(seg)
       if (sub) {
-        console.error(`段 ${rangeQuery(seg)} 拉满 ${SEARCH_LIMIT}，分裂为 ${sub.length} 个子段继续`)
+        console.error(`段 ${rangeQuery(seg)} 拉满 ${SEARCH_LIMIT}（${items.length} 条），分裂为 ${sub.length} 个子段继续`)
         stack.push(...sub)
         continue
       }
