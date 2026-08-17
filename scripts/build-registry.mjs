@@ -113,6 +113,7 @@ function splitSegment(seg) {
 
 async function fetchSegment(seg) {
   const collected = []
+  let total = 0
   const q = rangeQuery(seg)
   for (let page = 1; page <= MAX_PAGES; page++) {
     const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=${PER_PAGE}&page=${page}`
@@ -125,12 +126,13 @@ async function fetchSegment(seg) {
       if (String(e && e.message || '').includes('422')) break
       throw e
     }
+    total = Number(j.total_count) || total
     for (const it of j.items || []) {
       if (!it.fork && !it.archived) collected.push(it)
     }
     if ((j.items || []).length < PER_PAGE) break
   }
-  return collected
+  return { items: collected, total }
 }
 
 function normalize(it) {
@@ -155,15 +157,17 @@ async function buildFull() {
   let segmentsDone = 0
   while (stack.length) {
     const seg = stack.pop()
-    const items = await fetchSegment(seg)
-    if (items.length >= SEARCH_LIMIT) {
+    const { items, total } = await fetchSegment(seg)
+    // 取全判定：GitHub 深分页可能不满 1000 条就停止（relevance 排序下 <1000 即截断），
+    // 因此以 total_count 为准——只要 items < total 就说明没取全，继续分裂。
+    if (items.length < total) {
       const sub = splitSegment(seg)
       if (sub) {
-        console.error(`段 ${rangeQuery(seg)} 拉满 ${SEARCH_LIMIT}（${items.length} 条），分裂为 ${sub.length} 个子段继续`)
+        console.error(`段 ${rangeQuery(seg)} 未取全（${items.length}/${total}），分裂为 ${sub.length} 个子段继续`)
         stack.push(...sub)
         continue
       }
-      console.error(`段 ${rangeQuery(seg)} 拉满但无法继续分裂，可能丢失数据`)
+      console.error(`段 ${rangeQuery(seg)} 未取全（${items.length}/${total}）但无法继续分裂，可能丢失数据`)
     }
     for (const it of items) seen.set(it.full_name, it)
     segmentsDone++
