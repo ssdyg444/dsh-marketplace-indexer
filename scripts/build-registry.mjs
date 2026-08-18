@@ -186,10 +186,31 @@ function mergeWithPrev(fresh) {
   return [...map.values()]
 }
 
+async function buildIncremental() {
+  // 增量：单查询（无 stars 分段），只拉最近活跃仓库，不走分裂。
+  // total_count 是近似值，分裂判定会误触发；活跃仓库量小，单查询足够。
+  const collected = []
+  const q = 'topic:' + TOPIC + sinceClause()
+  for (let page = 1; page <= MAX_PAGES; page++) {
+    const url = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&per_page=${PER_PAGE}&page=${page}`
+    let j
+    try {
+      j = await api(url)
+    } catch (e) {
+      if (String(e && e.message || '').includes('422')) break
+      throw e
+    }
+    for (const it of j.items || []) collected.push(it)
+    if ((j.items || []).length < PER_PAGE) break
+  }
+  console.error(`增量查询完成：${collected.length} 个活跃仓库`)
+  return collected
+}
+
 async function main() {
   const started = Date.now()
   console.error(`模式：${INCREMENTAL_DAYS ? `增量（最近 ${INCREMENTAL_DAYS} 天 pushed）` : '全量'} · token：${TOKEN ? '有' : '无（限速 10/min）'} · 目标：topic:${TOPIC}`)
-  const fresh = await buildFull()
+  const fresh = INCREMENTAL_DAYS ? await buildIncremental() : await buildFull()
   console.error(`扫描完成：${fresh.length} 个仓库（未合并）`)
   // 无论全量/增量都合并旧索引：GitHub 深分页可能部分完成，
   // 直接替换会丢失已有条目；合并保证只增不减（同名条目用新数据刷新）。
