@@ -127,9 +127,10 @@ async function fetchSegment(seg) {
       throw e
     }
     total = Number(j.total_count) || total
-    for (const it of j.items || []) {
-      if (!it.fork && !it.archived) collected.push(it)
-    }
+    // 收集阶段不过滤 fork/archived：GitHub total_count 是近似值，
+    // 提前过滤会让 items 永远小于 total，导致无谓的多层分裂。
+    // 全部收集完后统一过滤。
+    for (const it of j.items || []) collected.push(it)
     if ((j.items || []).length < PER_PAGE) break
   }
   return { items: collected, total }
@@ -158,16 +159,16 @@ async function buildFull() {
   while (stack.length) {
     const seg = stack.pop()
     const { items, total } = await fetchSegment(seg)
-    // 取全判定：GitHub 深分页可能不满 1000 条就停止（relevance 排序下 <1000 即截断），
-    // 因此以 total_count 为准——只要 items < total 就说明没取全，继续分裂。
-    if (items.length < total) {
+    // 分裂判定：超过单查询 1000 条上限（items>=1000）或未达到该段申报总量
+    // （total 为近似值，仅作提示；真正收敛靠 422/不满页的自然截断）。
+    if (items.length >= SEARCH_LIMIT || items.length < total) {
       const sub = splitSegment(seg)
       if (sub) {
         console.error(`段 ${rangeQuery(seg)} 未取全（${items.length}/${total}），分裂为 ${sub.length} 个子段继续`)
         stack.push(...sub)
         continue
       }
-      console.error(`段 ${rangeQuery(seg)} 未取全（${items.length}/${total}）但无法继续分裂，可能丢失数据`)
+      console.error(`段 ${rangeQuery(seg)} 未取全（${items.length}/${total}）但无法继续分裂`)
     }
     for (const it of items) seen.set(it.full_name, it)
     segmentsDone++
@@ -190,7 +191,8 @@ async function main() {
   console.error(`模式：${INCREMENTAL_DAYS ? `增量（最近 ${INCREMENTAL_DAYS} 天 pushed）` : '全量'} · token：${TOKEN ? '有' : '无（限速 10/min）'} · 目标：topic:${TOPIC}`)
   const fresh = await buildFull()
   console.error(`扫描完成：${fresh.length} 个仓库（未合并）`)
-  const repos = INCREMENTAL_DAYS ? mergeWithPrev(fresh) : fresh
+  let repos = INCREMENTAL_DAYS ? mergeWithPrev(fresh) : fresh
+  repos = repos.filter((r) => !r.fork && !r.archived)
   repos.sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0))
   const doc = {
     generated_at: new Date().toISOString(),
