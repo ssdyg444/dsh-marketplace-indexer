@@ -191,7 +191,9 @@ async function main() {
   console.error(`模式：${INCREMENTAL_DAYS ? `增量（最近 ${INCREMENTAL_DAYS} 天 pushed）` : '全量'} · token：${TOKEN ? '有' : '无（限速 10/min）'} · 目标：topic:${TOPIC}`)
   const fresh = await buildFull()
   console.error(`扫描完成：${fresh.length} 个仓库（未合并）`)
-  let repos = INCREMENTAL_DAYS ? mergeWithPrev(fresh) : fresh
+  // 无论全量/增量都合并旧索引：GitHub 深分页可能部分完成，
+  // 直接替换会丢失已有条目；合并保证只增不减（同名条目用新数据刷新）。
+  let repos = mergeWithPrev(fresh)
   repos = repos.filter((r) => !r.fork && !r.archived)
   repos.sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0))
   const doc = {
