@@ -136,20 +136,45 @@ async function fetchSegment(seg) {
   return { items: collected, total }
 }
 
-function normalize(it) {
-  return {
-    full_name: it.full_name,
-    name: it.name,
+// 历史上已经精简过的条目可能额外带这些字段（由 seed 生成器写入），
+// dsh-market 会读取它们，合并旧索引时必须原样保留。
+const KEEP_EXTRA = ['pkg_name', 'version', 'npm_version', 'npm_pkg_name', 'category', 'market_tags', 'installable']
+
+// license 在原始对象里是 { key, name, spdx_id, url, node_id }，精简条目里是字符串。
+function slimLicense(value) {
+  if (value && typeof value === 'object' && value.spdx_id) return value.spdx_id
+  return typeof value === 'string' ? value : ''
+}
+
+/**
+ * 精简一条仓库记录后再落盘。
+ *
+ * GitHub Search 的原始对象有 ~80 个字段（owner 对象、几十个 *_url、permissions、
+ * score…），单条平均 5.7KB。直接写盘会把 registry.json 撑到 20MB 以上，而
+ * jsDelivr 单文件上限是 20MB —— 超了三个镜像全部返回 403，只能退回
+ * raw.githubusercontent（国内常不可达）。只保留 dsh-market 真正消费的字段，
+ * 体积降到约 1/10，CDN 恢复可用。
+ */
+function slim(it) {
+  const out = {
+    full_name: it.full_name || '',
+    name: it.name || '',
     description: it.description || '',
-    html_url: it.html_url,
+    html_url: it.html_url || '',
     stargazers_count: it.stargazers_count || 0,
     updated_at: it.updated_at || '',
     created_at: it.created_at || '',
     default_branch: it.default_branch || '',
     topics: Array.isArray(it.topics) ? it.topics : [],
-    license: it.license && it.license.spdx_id ? it.license.spdx_id : '',
-    registry_seen_at: new Date().toISOString(),
+    license: slimLicense(it.license),
+    registry_seen_at: it.registry_seen_at || new Date().toISOString(),
   }
+  for (const key of KEEP_EXTRA) {
+    const value = it[key]
+    if (value === undefined || value === null || value === '') continue
+    out[key] = value
+  }
+  return out
 }
 
 async function buildFull() {
@@ -215,8 +240,10 @@ async function main() {
   // 无论全量/增量都合并旧索引：GitHub 深分页可能部分完成，
   // 直接替换会丢失已有条目；合并保证只增不减（同名条目用新数据刷新）。
   let repos = mergeWithPrev(fresh)
+  // fork/archived 只在原始对象里存在，必须先过滤再精简。
   repos = repos.filter((r) => !r.fork && !r.archived)
   repos.sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0))
+  repos = repos.map(slim)
   const doc = {
     generated_at: new Date().toISOString(),
     count: repos.length,
@@ -226,7 +253,8 @@ async function main() {
   }
   mkdirSync(ROOT, { recursive: true })
   writeFileSync(OUT, JSON.stringify(doc))
-  console.error(`已写入 ${OUT}：${repos.length} 个插件（耗时 ${((Date.now() - started) / 1000).toFixed(0)}s）`)
+  const bytes = Buffer.byteLength(readFileSync(OUT, 'utf8'), 'utf8')
+  console.error(`已写入 ${OUT}：${repos.length} 个插件，${(bytes / 1048576).toFixed(2)} MB（耗时 ${((Date.now() - started) / 1000).toFixed(0)}s）`)
 }
 
 main().catch((e) => { console.error('失败：', e); process.exit(1) })
